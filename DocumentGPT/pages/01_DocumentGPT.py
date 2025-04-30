@@ -7,8 +7,9 @@ from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores import Chroma, FAISS
 from langchain.embeddings import OpenAIEmbeddings, CacheBackedEmbeddings
 from langchain.storage import LocalFileStore
-from langchain.prompts import ChatPromptTemplate
+from langchain.prompts import ChatPromptTemplate,MessagesPlaceholder
 from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
+from langchain.memory import ConversationSummaryBufferMemory
 
 class ChatCallbackHandler(BaseCallbackHandler):
 
@@ -34,6 +35,15 @@ chat = ChatOpenAI(
         ChatCallbackHandler()
     ]
 )
+
+if "memory" not in st.session_state:
+    st.session_state["memory"] = ConversationSummaryBufferMemory(
+        llm=chat,
+        max_token_limit=120,
+        return_messages=False
+    )
+
+memory = st.session_state["memory"]
 
 @st.cache_data(show_spinner= "Embedding file...")
 def embed_file(file):
@@ -80,10 +90,11 @@ prompt = ChatPromptTemplate.from_messages(
             "system",
             """
             Answer the question using ONLY the following context. If you don't know the answer just say you don't know. DON'T make anything up.
-
+    
             Context: {context}
             """,
         ),
+        MessagesPlaceholder(variable_name="history"),
         ("human", "{question}"),
     ]
 )
@@ -110,10 +121,21 @@ if file:
 
     if message:
         send_message(message, "human")
-        chain = {
-            "context": retriever | RunnableLambda(format_docs),
-            "question" : RunnablePassthrough(),
-        } | prompt | chat
+        # chain =  {
+        #     "context": retriever | RunnableLambda(format_docs),
+        #      "history": RunnableLambda(
+        #          lambda _: memory.load_memory_variables({})["history"]
+        #      ),
+        #     "question" : RunnablePassthrough(),
+        # } | prompt | chat
+
+        chain = RunnablePassthrough.assign(
+            history=lambda x: memory.load_memory_variables({})["history"]
+        ) | {
+                    "context": RunnableLambda(lambda x: x["question"]) | retriever | RunnableLambda(format_docs),
+                    "question": RunnableLambda(lambda x: x["question"]),
+                    "history": RunnableLambda(lambda x: x["history"]),
+                } | prompt | chat
 
         # same as chain
         # docs = retriever.invoke(message)
@@ -122,8 +144,12 @@ if file:
         # chat.predict_messages(prompt)
 
         with st.chat_message("ai"):
-            response = chain.invoke(message)
-        # send_message(response.content,"ai")
+            result = chain.invoke({"question": message})
+            memory.save_context({"input": message}, {"output": result.content})
+
+            # result = chain.invoke(message)
+            # memory.save_context({"input": message}, {"output": result.content})
+
 
 else:
     st.session_state["messages"] = []
