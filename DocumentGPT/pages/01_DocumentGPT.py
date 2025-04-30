@@ -2,6 +2,7 @@ import streamlit as st
 from langchain.chat_models import ChatOpenAI
 from langchain.document_loaders import UnstructuredFileLoader
 from langchain.callbacks import StreamingStdOutCallbackHandler
+from langchain.callbacks.base import BaseCallbackHandler
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores import Chroma, FAISS
 from langchain.embeddings import OpenAIEmbeddings, CacheBackedEmbeddings
@@ -9,12 +10,30 @@ from langchain.storage import LocalFileStore
 from langchain.prompts import ChatPromptTemplate
 from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
 
+class ChatCallbackHandler(BaseCallbackHandler):
+
+    message = ""
+
+    def on_llm_start(self, *args, **kwargs):
+        self.message_box = st.empty()
+
+    def on_llm_end(self, *args, **kwargs):
+        save_message(self.message, "ai")
+
+    def on_llm_new_token(self, token, *args, **kwargs):
+        self.message += token
+        self.message_box.markdown(self.message)
+
+
 chat = ChatOpenAI(
     #                 model="gpt-4.1-nano",
     temperature=0.1,
     tiktoken_model_name="gpt-3.5-turbo",
     streaming=True,
-    callbacks=[StreamingStdOutCallbackHandler()])
+    callbacks =[
+        ChatCallbackHandler()
+    ]
+)
 
 @st.cache_data(show_spinner= "Embedding file...")
 def embed_file(file):
@@ -39,11 +58,14 @@ def embed_file(file):
     retriever = vectorstore.as_retriever()
     return retriever
 
+def save_message(message, role):
+    st.session_state["messages"].append({"message": message, "role": role})
+
 def send_message(message, role,save=True):
     with st.chat_message(role):
         st.markdown(message)
     if save:
-        st.session_state["messages"].append({"message":message, "role":role})
+        save_message(message,role)
 
 def paint_history():
     for message in st.session_state["messages"]:
@@ -99,8 +121,9 @@ if file:
         # prompt = prompt.format_messages(context=docs, question = message)
         # chat.predict_messages(prompt)
 
-        response = chain.invoke(message)
-        send_message(response.content,"ai")
+        with st.chat_message("ai"):
+            response = chain.invoke(message)
+        # send_message(response.content,"ai")
 
 else:
     st.session_state["messages"] = []
